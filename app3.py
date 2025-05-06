@@ -1,46 +1,53 @@
-from flask import Flask, request, jsonify
-import requests
-import os
-from dotenv import load_dotenv
+import cv2
+import psycopg2
+import io
 
-load_dotenv()
+# Capture image from webcam
+def capture_image():
+    cam = cv2.VideoCapture(0)
+    ret, frame = cam.read()
+    cam.release()
 
-app = Flask(__name__)
+    if not ret:
+        raise Exception("Failed to capture image")
 
-VAPI_URL = "https://api.vapi.ai/assistants"
-RETELL_URL = "https://api.retellai.com/agents"
+    # Encode image as JPEG
+    ret, buffer = cv2.imencode('.jpg', frame)
+    if not ret:
+        raise Exception("Failed to encode image")
 
-VAPI_API_KEY = "9dce4862-024b-48e6-b26f-42e4869850d7"
-RETELL_API_KEY = "key_9243de26f1e80e60bc2aa0f2a68c"
+    return buffer.tobytes()
 
-@app.route("/create-agent", methods=["POST"])
-def create_agent():
-    req = request.get_json()
+# Store image in PostgreSQL
+def store_image_in_db(image_bytes):
+    conn = psycopg2.connect(
+      host="dpg-d0apcb15pdvs73c0u030-a.oregon-postgres.render.com",
+        port=5432,
+        database="image_store_8qam",
+        user="image_store_8qam_user",
+        password="pVZT7u3IdvZMjeEHmZeIhuLmk4QiFrHN"
+    )
+    cursor = conn.cursor()
 
-    platform = req.get("platform")
-    data = req.get("data")
+    # Create table if not exists
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS webcam_images (
+            id SERIAL PRIMARY KEY,
+            image BYTEA,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
 
-    if not platform or not data:
-        return jsonify({"error": "Missing 'platform' or 'data'"}), 400
-
-    headers = {"Content-Type": "application/json"}
-
-    if platform.lower() == "vapi":
-        headers["Authorization"] = f"Bearer {VAPI_API_KEY}"
-        response = requests.post(VAPI_URL, json=data, headers=headers)
-
-    elif platform.lower() == "retell":
-        headers["Authorization"] = f"Bearer {RETELL_API_KEY}"
-        response = requests.post(RETELL_URL, json=data, headers=headers)
-
-    else:
-        return jsonify({"error": "Invalid platform. Use 'vapi' or 'retell'."}), 400
-
-    return jsonify({
-        "status_code": response.status_code,
-        "response": response.json()
-    }), response.status_code
-
+    # Insert the image
+    cursor.execute("INSERT INTO webcam_images (image) VALUES (%s)", (psycopg2.Binary(image_bytes),))
+    conn.commit()
+    cursor.close()
+    conn.close()
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    try:
+        img_data = capture_image()
+        store_image_in_db(img_data)
+        print("Image captured and stored in database.")
+    except Exception as e:
+        print("Error:", e)
